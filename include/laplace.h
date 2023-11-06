@@ -23,7 +23,7 @@ namespace exafmm_t {
 
     /**
      * @brief Compute potentials at targets induced by sources directly.
-     * 
+     *
      * @param src_coord Vector of coordinates of sources.
      * @param src_value Vector of charges of sources.
      * @param trg_coord Vector of coordinates of targets.
@@ -82,7 +82,7 @@ namespace exafmm_t {
 
     /**
      * @brief Compute potentials and gradients at targets induced by sources directly.
-     * 
+     *
      * @param src_coord Vector of coordinates of sources.
      * @param src_value Vector of charges of sources.
      * @param trg_coord Vector of coordinates of targets.
@@ -159,9 +159,81 @@ namespace exafmm_t {
         trg_value[4*t+1] -= gradient[0] / (4*PI);
         trg_value[4*t+2] -= gradient[1] / (4*PI);
         trg_value[4*t+3] -= gradient[2] / (4*PI);
-      }   
+      }
       add_flop((long long)ntrgs*(long long)nsrcs*(20+4*2));
     }
+    /**
+     * @brief Compute force at targets induced by sources directly.
+     *
+     * @param src_coord Vector of coordinates of sources.
+     * @param src_value Vector of charges of sources.
+     * @param trg_coord Vector of coordinates of targets.
+     * @param trg_value Vector of potentials of targets.
+     * @param m value of distance
+     */
+     void force_P2P(RealVec& src_coord, RealVec& src_value, RealVec& trg_coord, RealVec& trg_force, int m) {
+       simdvec zero(real_t(0));
+       int nsrcs = src_coord.size() / 3;
+       int ntrgs = trg_coord.size() / 3;
+       int t;
+       for (t = 0; t + NSIMD <= ntrgs; t += NSIMD) {
+           simdvec tx(&trg_coord[3*t+0], 3*(int)sizeof(real_t));
+           simdvec ty(&trg_coord[3*t+1], 3*(int)sizeof(real_t));
+           simdvec tz(&trg_coord[3*t+2], 3*(int)sizeof(real_t));
+           simdvec tfx(zero);
+           simdvec tfy(zero);
+           simdvec tfz(zero);
+           for (int s = 0; s < nsrcs; s++) {
+               simdvec sx(src_coord[3*s+0]);
+               sx -= tx;
+               simdvec sy(src_coord[3*s+1]);
+               sy -= ty;
+               simdvec sz(src_coord[3*s+2]);
+               sz -= tz;
+               simdvec sv(src_value[s]);
+               simdvec r2 = sx * sx + sy * sy + sz * sz;
+               simdvec invr = rsqrt(r2);
+               invr &= r2 > zero;
+               simdvec invr_m = invr;
+               for (int i = 1; i < m; ++i) { // Replace pow with a loop
+                   invr_m *= invr;
+               }
+               tfx += sx * invr_m;
+               tfy += sy * invr_m;
+               tfz += sz * invr_m;
+           }
+           for (int mi = 0; mi < NSIMD && t + mi < ntrgs; mi++) {
+               trg_force[3*(t+mi)+0] += tfx[mi];
+               trg_force[3*(t+mi)+1] += tfy[mi];
+               trg_force[3*(t+mi)+2] += tfz[mi];
+           }
+       }
+       for (; t < ntrgs; t++) {
+           real_t fx = 0;
+           real_t fy = 0;
+           real_t fz = 0;
+           for (int s = 0; s < nsrcs; ++s) {
+               real_t dx = trg_coord[3*t+0] - src_coord[3*s+0];
+               real_t dy = trg_coord[3*t+1] - src_coord[3*s+1];
+               real_t dz = trg_coord[3*t+2] - src_coord[3*s+2];
+               real_t r2 = dx*dx + dy*dy + dz*dz;
+               if (r2 != 0) {
+                   real_t inv_r = 1.0 / std::sqrt(r2);
+                   real_t inv_r_m = inv_r; // Start with -1 power
+                   for (int i = 1; i < m; ++i) {
+                       inv_r_m *= inv_r; // Multiply inv_r by itself m-1 more times to get r^-m
+                   }
+                   fx += dx * inv_r_m;
+                   fy += dy * inv_r_m;
+                   fz += dz * inv_r_m;
+               }
+           }
+           trg_force[3*t+0] += fx;
+           trg_force[3*t+1] += fy;
+           trg_force[3*t+2] += fz;
+       }
+       add_flop((long long)ntrgs * (long long)nsrcs * (21 + 4 * (m-1)));
+   }
   };
 }  // end namespace exafmm_t
 #endif
